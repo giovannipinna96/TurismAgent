@@ -1,48 +1,3 @@
-# from transformers import AutoModel, AutoTokenizer, AutoProcessor, AutoModelForCausalLM
-# import argparse
-# import os
-
-# def download_model(model_name: str, save_dir: str, include_tokenizer=True, include_processor=True):
-#     os.makedirs(save_dir, exist_ok=True)
-
-#     # Scarica e salva il modello
-#     print(f"🔄 Downloading model: {model_name}")
-#     try:
-#         model = AutoModel.from_pretrained(model_name)
-#     except Exception as e:
-#         print(f"⚠️  Failed to download model trying AutoModelForCausalLM")
-#         model = AutoModelForCausalLM.from_pretrained(model_name)
-#     model.save_pretrained(save_dir)
-#     print(f"✅ Model saved to: {save_dir}")
-
-#     # Scarica e salva tokenizer (se esiste)
-#     if include_tokenizer:
-#         try:
-#             tokenizer = AutoTokenizer.from_pretrained(model_name)
-#             tokenizer.save_pretrained(save_dir)
-#             print(f"✅ Tokenizer saved to: {save_dir}")
-#         except Exception as e:
-#             print(f"⚠️  No tokenizer found: {e}")
-
-#     # Scarica e salva processor (se esiste)
-#     if include_processor:
-#         try:
-#             processor = AutoProcessor.from_pretrained(model_name)
-#             processor.save_pretrained(save_dir)
-#             print(f"✅ Processor saved to: {save_dir}")
-#         except Exception as e:
-#             print(f"⚠️  No processor found: {e}")
-
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser(description="Download and save a Hugging Face model locally.")
-#     parser.add_argument("--model_name", type=str, required=True, help="Name of the model on Hugging Face")
-#     parser.add_argument("--save_dir", type=str, required=True, help="Directory where to save the model")
-#     args = parser.parse_args()
-
-#     download_model(args.model_name, args.save_dir)
-
-
 from transformers import AutoModel, AutoTokenizer, AutoProcessor, AutoModelForCausalLM
 from huggingface_hub import snapshot_download
 import argparse
@@ -86,6 +41,7 @@ def download_model(model_name: str, save_dir: str, include_tokenizer=True, inclu
             processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
             processor.save_pretrained(save_dir)
             print(f"✅ Processor saved to: {save_dir}")
+            print("End")
         except Exception as e:
             print(f"⚠️  No processor found: {e}")
 

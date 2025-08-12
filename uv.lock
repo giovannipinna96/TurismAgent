@@ -845,6 +845,45 @@ wheels = [
 ]
 
 [[package]]
+name = "geoclip"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geopy" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pillow" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/12/44/dd778535fccf67b41c0d991ae5475dc30130aaba6b7ff152804fb5a9b841/geoclip-1.2.0.tar.gz", hash = "sha256:4767f5ad4f823d4256ecb0d69166263fb1bda19a594187bded59b498bfe8a613", size = 43155152, upload-time = "2024-03-25T18:17:45.483Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/c1/75cd818c077adc4e789fe111e3a8f7be6c33d748e4c71ad8fa390099b32e/geoclip-1.2.0-py3-none-any.whl", hash = "sha256:c29ae90b01cf177ffa50707686fc8d0bd104bc5ee8537b6c7480ed4e1a0a5a2d", size = 40289296, upload-time = "2024-03-25T18:17:40.243Z" },
+]
+
+[[package]]
+name = "geographiclib"
+version = "2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/96/cd/90271fd195d79a9c2af0ca21632b297a6cc3e852e0413a2e4519e67be213/geographiclib-2.0.tar.gz", hash = "sha256:f7f41c85dc3e1c2d3d935ec86660dc3b2c848c83e17f9a9e51ba9d5146a15859", size = 36720, upload-time = "2022-04-23T13:01:11.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/5a/a26132406f1f40cf51ea349a5f11b0a46cec02a2031ff82e391c2537247a/geographiclib-2.0-py3-none-any.whl", hash = "sha256:6b7225248e45ff7edcee32becc4e0a1504c606ac5ee163a5656d482e0cd38734", size = 40324, upload-time = "2022-04-23T13:01:09.958Z" },
+]
+
+[[package]]
+name = "geopy"
+version = "2.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "geographiclib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/fd/ef6d53875ceab72c1fad22dbed5ec1ad04eb378c2251a6a8024bad890c3b/geopy-2.4.1.tar.gz", hash = "sha256:50283d8e7ad07d89be5cb027338c6365a32044df3ae2556ad3f52f4840b3d0d1", size = 117625, upload-time = "2023-11-23T21:49:32.734Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/15/cf2a69ade4b194aa524ac75112d5caac37414b20a3a03e6865dfe0bd1539/geopy-2.4.1-py3-none-any.whl", hash = "sha256:ae8b4bc5c1131820f4d75fce9d4aaaca0c85189b3aa5d64c3dcaf5e3b7b882a7", size = 125437, upload-time = "2023-11-23T21:49:30.421Z" },
+]
+
+[[package]]
 name = "googleapis-common-protos"
 version = "1.70.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3307,10 +3346,12 @@ source = { virtual = "." }
 dependencies = [
     { name = "einops" },
     { name = "faiss-cpu" },
+    { name = "geoclip" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pillow" },
     { name = "qwen-vl-utils" },
+    { name = "scipy" },
     { name = "sentence-transformers" },
     { name = "smolagents", extra = ["gradio", "litellm", "mcp", "telemetry", "toolkit", "transformers", "vision"] },
     { name = "timm" },
@@ -3322,10 +3363,12 @@ dependencies = [
 requires-dist = [
     { name = "einops", specifier = ">=0.8.1" },
     { name = "faiss-cpu", specifier = ">=1.11.0.post1" },
+    { name = "geoclip", specifier = ">=1.2.0" },
     { name = "matplotlib", specifier = ">=3.10.5" },
     { name = "numpy", specifier = ">=2.3.2" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "qwen-vl-utils", specifier = ">=0.0.11" },
+    { name = "scipy", specifier = ">=1.16.1" },
     { name = "sentence-transformers", specifier = ">=5.1.0" },
     { name = "smolagents", extras = ["gradio", "litellm", "mcp", "telemetry", "toolkit", "transformers", "vision"], specifier = ">=1.20.0" },
     { name = "timm", specifier = ">=1.0.19" },
