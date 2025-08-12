@@ -299,7 +299,6 @@ class Localizator(Tool):
         geo_lat, geo_lon = top_pred_gps[0]
         geo_city, geo_country = self.reverse_geocode(geo_lat, geo_lon)
 
-        # ==== Output fancy ====
         return (
             "🌍 **Risultati Localizzazione** 🌍\n"
             f"📌 **StreetCLIP**: {street_city}, {street_country_name} ({street_conf*100:.2f}%)\n"
@@ -308,26 +307,48 @@ class Localizator(Tool):
             f"   Lat: {geo_lat:.6f}, Lon: {geo_lon:.6f}"
         )
 
-    def get_country_coordinates(self, country_name):
+    def internet_available(self):
         try:
-            location = geolocator.geocode(country_name, timeout=10)
-            if location:
-                return location.latitude, location.longitude
-        except GeocoderTimedOut:
-            return (0.0, 0.0)
+            socket.create_connection(("8.8.8.8", 53), timeout=3)
+            return True
+        except OSError:
+            return False
+
+    def get_country_coordinates(self, country_name):
+        if self.internet_available():
+            try:
+                location = geolocator.geocode(country_name, timeout=10)
+                if location:
+                    return location.latitude, location.longitude
+            except GeocoderTimedOut:
+                pass
+        # Se offline, tentiamo di recuperare coordinate dal reverse_geocoder (non diretto)
+        # Qui prendiamo la prima corrispondenza di città nota per quel paese
+        for entry in rg.search((0.0, 0.0)):  # Dummy per accedere al DB
+            if entry["cc"].lower() == country_name.lower()[:2]:
+                return float(entry["lat"]), float(entry["lon"])
         return (0.0, 0.0)
 
     def reverse_geocode(self, lat, lon):
-        try:
-            location = geolocator.reverse((lat, lon), exactly_one=True, timeout=10)
-            if location and location.raw.get("address"):
-                city = location.raw["address"].get("city") or location.raw["address"].get("town") or location.raw["address"].get("village") or "Unknown"
-                country = location.raw["address"].get("country", "Unknown")
-                return city, country
-        except GeocoderTimedOut:
-            return "Unknown", "Unknown"
-        return "Unknown", "Unknown"
+        if self.internet_available():
+            try:
+                location = geolocator.reverse((lat, lon), exactly_one=True, timeout=10)
+                if location and location.raw.get("address"):
+                    city = location.raw["address"].get("city") or location.raw["address"].get("town") or location.raw["address"].get("village") or "Unknown"
+                    country = location.raw["address"].get("country", "Unknown")
+                    return city, country
+            except GeocoderTimedOut:
+                pass
 
+        # FALLBACK OFFLINE
+        try:
+            results = rg.search((lat, lon))
+            if results:
+                entry = results[0]
+                return entry["name"], entry["cc"]
+        except Exception:
+            pass
+        return "Unknown", "Unknown"
 
 # ==== STEP 5: Agente smolagents ====
 retrieval_tool = ImageRetrievalTool()
