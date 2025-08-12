@@ -7,6 +7,8 @@ import os
 from geoclip import GeoCLIP
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
+import reverse_geocoder as rg
+import socket
 
 
 # ==== STEP 1: Setup CLIP ====
