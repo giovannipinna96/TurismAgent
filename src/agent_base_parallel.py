@@ -9,6 +9,10 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 import reverse_geocoder as rg
 import socket
+import torch.multiprocessing as mp
+from multiprocessing import Process, Queue, Manager
+import time
+import threading
 
 
 # ==== STEP 1: Setup CLIP ====
@@ -36,29 +40,90 @@ segformer_model.to(device)
 id2label = segformer_model.config.id2label
 
 
-# GeoCLIP - inizializzato solo se c'è connessione
+# ==== GPU MODEL MANAGER - Mantiene i modelli in VRAM ====
+class GPUModelManager:
+    """Singleton per gestire modelli GPU persistenti"""
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(GPUModelManager, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if not self._initialized:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.models = {}
+            self._lock = threading.Lock()
+            self._initialized = True
+            print(f"🚀 GPU Model Manager inizializzato su device: {self.device}")
+    
+    def load_streetclip(self):
+        """Carica StreetCLIP una sola volta e lo mantiene in VRAM"""
+        with self._lock:
+            if 'streetclip' not in self.models:
+                print("📥 Caricamento StreetCLIP in VRAM...")
+                self.models['streetclip'] = {
+                    'model': CLIPModel.from_pretrained(
+                        "/leonardo_work/uTS25_Pinna/phd_proj/TurismAgent/TurismAgent/model/StreetCLIP"
+                    ).to(self.device),
+                    'processor': CLIPProcessor.from_pretrained(
+                        "/leonardo_work/uTS25_Pinna/phd_proj/TurismAgent/TurismAgent/model/StreetCLIP"
+                    )
+                }
+                print("✅ StreetCLIP caricato e pronto in VRAM")
+            return self.models['streetclip']
+    
+    def load_geoclip(self):
+        """Carica GeoCLIP una sola volta e lo mantiene in VRAM"""
+        with self._lock:
+            if 'geoclip' not in self.models:
+                print("📥 Caricamento GeoCLIP in VRAM...")
+                self.models['geoclip'] = GeoCLIP().to(self.device)
+                print("✅ GeoCLIP caricato e pronto in VRAM")
+            return self.models['geoclip']
+    
+    def get_streetclip(self):
+        """Ottieni StreetCLIP (caricandolo se necessario)"""
+        if 'streetclip' not in self.models:
+            return self.load_streetclip()
+        return self.models['streetclip']
+    
+    def get_geoclip(self):
+        """Ottieni GeoCLIP (caricandolo se necessario)"""
+        if 'geoclip' not in self.models:
+            return self.load_geoclip()
+        return self.models['geoclip']
+    
+    def is_model_loaded(self, model_name):
+        """Verifica se un modello è già caricato"""
+        return model_name in self.models
+    
+    def get_memory_usage(self):
+        """Ottieni utilizzo memoria GPU"""
+        if torch.cuda.is_available():
+            return {
+                'allocated': torch.cuda.memory_allocated() / 1024**3,  # GB
+                'reserved': torch.cuda.memory_reserved() / 1024**3,    # GB
+                'free': (torch.cuda.get_device_properties(0).total_memory - 
+                        torch.cuda.memory_reserved()) / 1024**3        # GB
+            }
+        return None
+
+# Inizializza il manager globale
+gpu_manager = GPUModelManager()
+
+# Geopy per conversione coordinate <-> stato
+geolocator = Nominatim(user_agent="LocalizatorGeoAgent")
+
+# Funzione per controllo internet
 def internet_available():
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=3)
         return True
     except OSError:
         return False
-
-# Inizializza GeoCLIP solo se c'è connessione internet
-geoclip_model = None
-if internet_available():
-    try:
-        geoclip_model = GeoCLIP().to(device)
-        # print("GeoCLIP inizializzato con successo.")
-    except Exception as e:
-        # print(f"Errore nell'inizializzazione di GeoCLIP: {e}")
-        geoclip_model = None
-else:
-    # print("Nessuna connessione internet. GeoCLIP non verrà utilizzato.")
-    pass
-
-# Geopy per conversione coordinate <-> stato
-geolocator = Nominatim(user_agent="LocalizatorGeoAgent")
 
 # Lista label StreetCLIP
 labels = [
@@ -128,7 +193,7 @@ for filename, name, url in monuments:
 # ==== STEP 4: Definizione Tool ====
 class ImageRetrievalTool(Tool):
     name = "image_retrieval"
-    description = """Advanced image analysis tool that performs semantic segmentation and monument/landmark identification."""
+    description = """Tool for extract information, name and description from image."""
     inputs = {
         "image_path": {"type": "string", "description": "Path of the image to analyze and retrieve information."}
     }
@@ -238,50 +303,187 @@ class Localizator(Tool):
     }
     output_type = "string"
 
-    def forward(self, image_path: str) -> str:
-        img = Image.open(image_path).convert("RGB")
+    def __init__(self):
+        super().__init__()
+        # Inizializza multiprocessing per CUDA
+        mp.set_start_method('spawn', force=True)
         
-        # Controlla la connessione internet all'inizio
-        has_internet = self.internet_available()
+        # Pre-carica i modelli all'inizializzazione se possibile
+        self._preload_models()
 
-        # ==== Metodo 1: StreetCLIP (sempre disponibile) ====
-        street_inputs = streetclip_processor(text=labels, images=img, return_tensors="pt", padding=True).to(device)
-        with torch.no_grad():
-            street_outputs = streetclip_model(**street_inputs)
-        logits_per_image = street_outputs.logits_per_image
-        prediction = logits_per_image.softmax(dim=1)
-        sorted_confidences = sorted(
-            {labels[i]: float(prediction[0][i].item()) for i in range(len(labels))}.items(),
-            key=lambda item: item[1], reverse=True
-        )
-        street_country, street_conf = sorted_confidences[0]
-        street_lat, street_lon = self.get_country_coordinates(street_country, has_internet)
-        street_city, street_country_name = self.reverse_geocode(street_lat, street_lon, has_internet)
-
-        result_text = (
-            "🌍 **Risultati Localizzazione** 🌍\n"
-            f"📌 **StreetCLIP**: {street_city}, {street_country_name} ({street_conf*100:.2f}%)\n"
-            f"   Lat: {street_lat:.6f}, Lon: {street_lon:.6f}\n"
-        )
-
-        # ==== Metodo 2: GeoCLIP (solo se disponibile e c'è internet) ====
-        if has_internet and geoclip_model is not None:
+    def _preload_models(self):
+        """Pre-carica i modelli in VRAM per prestazioni ottimali"""
+        print("🔄 Pre-caricamento modelli in corso...")
+        
+        # Carica sempre StreetCLIP
+        gpu_manager.load_streetclip()
+        
+        # Carica GeoCLIP solo se c'è internet
+        if internet_available():
             try:
-                top_pred_gps, _ = geoclip_model.predict(image_path, top_k=1)
-                geo_lat, geo_lon = top_pred_gps[0]
+                gpu_manager.load_geoclip()
+            except Exception as e:
+                print(f"⚠️ Errore nel caricamento GeoCLIP: {e}")
+        
+        # Mostra utilizzo memoria
+        memory_info = gpu_manager.get_memory_usage()
+        if memory_info:
+            print(f"💾 Memoria GPU - Allocata: {memory_info['allocated']:.2f}GB, "
+                  f"Riservata: {memory_info['reserved']:.2f}GB, "
+                  f"Libera: {memory_info['free']:.2f}GB")
+
+    def streetclip_worker(self, image_path, result_queue):
+        """Worker process per StreetCLIP con modelli persistenti in VRAM"""
+        try:
+            # Usa i modelli già caricati dal manager
+            streetclip_models = gpu_manager.get_streetclip()
+            streetclip_model_worker = streetclip_models['model']
+            streetclip_processor_worker = streetclip_models['processor']
+            
+            device = streetclip_model_worker.device
+            
+            img = Image.open(image_path).convert("RGB")
+            street_inputs = streetclip_processor_worker(
+                text=labels, images=img, return_tensors="pt", padding=True
+            ).to(device)
+            
+            with torch.no_grad():
+                street_outputs = streetclip_model_worker(**street_inputs)
+            
+            logits_per_image = street_outputs.logits_per_image
+            prediction = logits_per_image.softmax(dim=1)
+            sorted_confidences = sorted(
+                {labels[i]: float(prediction[0][i].item()) for i in range(len(labels))}.items(),
+                key=lambda item: item[1], reverse=True
+            )
+            street_country, street_conf = sorted_confidences[0]
+            
+            result_queue.put(('streetclip', street_country, street_conf))
+            print(f"✅ StreetCLIP completato: {street_country} ({street_conf*100:.2f}%)")
+            
+        except Exception as e:
+            print(f"❌ Errore StreetCLIP: {e}")
+            result_queue.put(('streetclip_error', str(e), 0.0))
+
+    def geoclip_worker(self, image_path, result_queue):
+        """Worker process per GeoCLIP con modelli persistenti in VRAM"""
+        try:
+            # Usa il modello già caricato dal manager
+            geoclip_model_worker = gpu_manager.get_geoclip()
+            
+            top_pred_gps, _ = geoclip_model_worker.predict(image_path, top_k=1)
+            geo_lat, geo_lon = top_pred_gps[0]
+            
+            result_queue.put(('geoclip', geo_lat, geo_lon))
+            print(f"✅ GeoCLIP completato: {geo_lat:.6f}, {geo_lon:.6f}")
+            
+        except Exception as e:
+            print(f"❌ Errore GeoCLIP: {e}")
+            result_queue.put(('geoclip_error', str(e), 0.0, 0.0))
+
+    def forward(self, image_path: str) -> str:
+        print(f"🔍 Avvio localizzazione per: {image_path}")
+        
+        # Controlla la connessione internet
+        has_internet = internet_available()
+        print(f"🌐 Connessione internet: {'✅ Disponibile' if has_internet else '❌ Non disponibile'}")
+        
+        # Mostra stato dei modelli
+        streetclip_loaded = gpu_manager.is_model_loaded('streetclip')
+        geoclip_loaded = gpu_manager.is_model_loaded('geoclip')
+        print(f"🧠 Modelli caricati - StreetCLIP: {'✅' if streetclip_loaded else '❌'}, "
+              f"GeoCLIP: {'✅' if geoclip_loaded else '❌'}")
+        
+        # Crea code per i risultati dei processi
+        result_queue = Queue()
+        processes = []
+        
+        # Avvia sempre StreetCLIP
+        print("🚀 Avvio processo StreetCLIP...")
+        streetclip_process = Process(
+            target=self.streetclip_worker,
+            args=(image_path, result_queue)
+        )
+        streetclip_process.start()
+        processes.append(streetclip_process)
+        
+        # Avvia GeoCLIP solo se c'è internet e il modello è disponibile
+        geoclip_process = None
+        if has_internet and geoclip_loaded:
+            print("🚀 Avvio processo GeoCLIP...")
+            geoclip_process = Process(
+                target=self.geoclip_worker,
+                args=(image_path, result_queue)
+            )
+            geoclip_process.start()
+            processes.append(geoclip_process)
+        
+        # Raccogli i risultati
+        results = {}
+        expected_results = 2 if (has_internet and geoclip_loaded) else 1
+        timeout = 500  # timeout aumentato per modelli pesanti
+        start_time = time.time()
+        
+        print(f"⏳ Attesa risultati ({expected_results} processi, timeout: {timeout}s)...")
+        
+        while len(results) < expected_results and (time.time() - start_time) < timeout:
+            if not result_queue.empty():
+                result = result_queue.get()
+                if result[0] == 'streetclip':
+                    results['streetclip'] = (result[1], result[2])  # country, confidence
+                elif result[0] == 'geoclip':
+                    results['geoclip'] = (result[1], result[2])  # lat, lon
+                elif result[0] == 'streetclip_error':
+                    results['streetclip_error'] = result[1]
+                elif result[0] == 'geoclip_error':
+                    results['geoclip_error'] = result[1]
+            time.sleep(0.1)  # Breve pausa per evitare busy waiting
+        
+        # Termina tutti i processi
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=500)
+        
+        print("🏁 Elaborazione completata, generazione risultati...")
+        
+        # Costruisci il risultato finale
+        result_text = "🌍 **Risultati Localizzazione** 🌍\n"
+        
+        # Risultati StreetCLIP
+        if 'streetclip' in results:
+            street_country, street_conf = results['streetclip']
+            street_lat, street_lon = self.get_country_coordinates(street_country, has_internet)
+            street_city, street_country_name = self.reverse_geocode(street_lat, street_lon, has_internet)
+            
+            result_text += (
+                f"📌 **StreetCLIP**: {street_city}, {street_country_name} ({street_conf*100:.2f}%)\n"
+                f"   Lat: {street_lat:.6f}, Lon: {street_lon:.6f}\n"
+            )
+        elif 'streetclip_error' in results:
+            result_text += f"⚠️ **StreetCLIP**: Errore - {results['streetclip_error']}\n"
+        else:
+            result_text += "⚠️ **StreetCLIP**: Timeout o processo interrotto\n"
+        
+        # Risultati GeoCLIP
+        if has_internet and geoclip_loaded:
+            if 'geoclip' in results:
+                geo_lat, geo_lon = results['geoclip']
                 geo_city, geo_country = self.reverse_geocode(geo_lat, geo_lon, has_internet)
                 
                 result_text += (
                     f"\n📌 **GeoCLIP**: {geo_city}, {geo_country}\n"
                     f"   Lat: {geo_lat:.6f}, Lon: {geo_lon:.6f}"
                 )
-            except Exception as e:
-                result_text += f"\n⚠️ **GeoCLIP**: Errore durante la localizzazione - {str(e)}"
+            elif 'geoclip_error' in results:
+                result_text += f"\n⚠️ **GeoCLIP**: Errore - {results['geoclip_error']}"
+            else:
+                result_text += "\n⚠️ **GeoCLIP**: Timeout o processo interrotto"
         else:
             if not has_internet:
                 result_text += "\n⚠️ **GeoCLIP**: Non disponibile (nessuna connessione internet)"
-            else:
-                result_text += "\n⚠️ **GeoCLIP**: Non inizializzato correttamente"
+            elif not geoclip_loaded:
+                result_text += "\n⚠️ **GeoCLIP**: Modello non caricato in VRAM"
 
         return result_text
 
@@ -298,7 +500,7 @@ class Localizator(Tool):
             
         if has_internet:
             try:
-                location = geolocator.geocode(country_name, timeout=10)
+                location = geolocator.geocode(country_name, timeout=500)
                 if location:
                     return location.latitude, location.longitude
             except GeocoderTimedOut:
@@ -344,7 +546,7 @@ class Localizator(Tool):
             
         if has_internet:
             try:
-                location = geolocator.reverse((lat, lon), exactly_one=True, timeout=10)
+                location = geolocator.reverse((lat, lon), exactly_one=True, timeout=500)
                 if location and location.raw.get("address"):
                     city = location.raw["address"].get("city") or location.raw["address"].get("town") or location.raw["address"].get("village") or "Unknown"
                     country = location.raw["address"].get("country", "Unknown")
@@ -372,8 +574,15 @@ agent_model = TransformersModel(
     trust_remote_code=True,
     device_map="auto",
 )
-# agent_model = TransformersModel(model_id="/leonardo_work/uTS25_Pinna/phd_proj/TurismAgent/TurismAgent/model/Qwen3-4B-Thinking-2507", trust_remote_code=True, device_map="auto")
 
+memory_info = gpu_manager.get_memory_usage()
+if memory_info:
+    print(f"💾 Memoria GPU - Allocata: {memory_info['allocated']:.2f}GB, "
+            f"Riservata: {memory_info['reserved']:.2f}GB, "
+            f"Libera: {memory_info['free']:.2f}GB")
+    
+    
+# agent_model = TransformersModel(model_id="/leonardo_work/uTS25_Pinna/phd_proj/TurismAgent/TurismAgent/model/Qwen3-4B-Thinking-2507", trust_remote_code=True, device_map="auto")
 agent = CodeAgent(
     tools=[localizator, retrieval_tool],
     model=agent_model,
@@ -381,7 +590,11 @@ agent = CodeAgent(
     planning_interval=3,  # Esegui il planning ogni 3 step
 )
 
-# ==== STEP 6: Test ====
+# ==== STEP 6: Test con domanda più dettagliata ====
 file_path = "/leonardo_work/uTS25_Pinna/phd_proj/TurismAgent/TurismAgent/data/img_segm/building_center.png"
-result = agent.run(f"Localize the image: {file_path} and then give some info about it.")
+
+# Domanda più dettagliata e specifica
+detailed_query = f"Localize the image: {file_path} and then give some info about it."
+
+result = agent.run(detailed_query)
 print(result)
